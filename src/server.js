@@ -44,13 +44,20 @@ function buildICS({ title, description, startISO, endISO }) {
 
 function getMailer() {
   return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
+    host: process.env.SMTP_HOST,      // smtp.gmail.com
     port: Number(process.env.SMTP_PORT || 587),
-    secure: false, // 587 STARTTLS
+    secure: false,                    // 587 STARTTLS
+    requireTLS: true,
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
     },
+    // ✅ fuerza IPv4
+    family: 4,
+    // ✅ timeouts razonables
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 20000,
   });
 }
 
