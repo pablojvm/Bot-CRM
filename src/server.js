@@ -38,7 +38,7 @@ OBJETIVO
 INTENCIONES (clasifica mentalmente)
 - INFO: pide información general (servicios, precios, horarios, ubicación, proceso).
 - SOPORTE: problema o incidencia.
-- CITA: quiere reservar, ver disponibilidad, cambiar/cancelar.
+- CITA: quiere reservar, ver disponibilidad, cambiar/cancelar
 - OTRO: no encaja.
 
 REGLAS PARA EMPUJAR A CITA (cuando ya tengas la intención)
