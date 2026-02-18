@@ -384,8 +384,19 @@ app.post("/webhook", async (req, res) => {
                 });
 
                 await pool.query(
-                    `insert into events (client_id, lead_id, type, payload)
-           values ($1,$2,'calendar_event_created', jsonb_build_object('eventId',$3,'start',$4,'end',$5))`,
+                    `
+  insert into events (client_id, lead_id, type, payload)
+  values (
+    $1,
+    $2,
+    'calendar_event_created',
+    jsonb_build_object(
+      'eventId', $3::text,
+      'start',  $4::text,
+      'end',    $5::text
+    )
+  )
+  `,
                     [clientId, outLeadId, ev.id, picked.startISO, picked.endISO]
                 );
 
