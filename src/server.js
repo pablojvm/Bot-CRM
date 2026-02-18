@@ -334,6 +334,95 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
+async function runFollowups() {
+  const clientId = "default";
+
+  // 1) Coger candidatos vencidos (limit por seguridad)
+  const { rows } = await pool.query(
+    `
+    select lf.client_id, lf.lead_id, lf.step, lf.next_run_at, l.wa_from, l.name
+    from lead_followups lf
+    join leads l on l.id = lf.lead_id
+    where lf.client_id = $1
+      and lf.is_active = true
+      and lf.next_run_at <= now()
+      and l.wa_from is not null
+    order by lf.next_run_at asc
+    limit 20
+    `,
+    [clientId]
+  );
+
+  let processed = 0;
+
+  for (const f of rows) {
+    // 2) “Lock” optimista: solo procesa si sigue vencido y activo
+    const lock = await pool.query(
+      `
+      update lead_followups
+      set updated_at = now()
+      where client_id = $1
+        and lead_id = $2
+        and is_active = true
+        and next_run_at <= now()
+      returning client_id, lead_id, step
+      `,
+      [f.client_id, f.lead_id]
+    );
+
+    if (lock.rowCount === 0) continue; // otro proceso ya lo pilló
+
+    // 3) Mensaje (simple). Luego lo afinamos con prompt/plantillas.
+    const msg =
+      `Hola${f.name ? `, ${f.name}` : ""}. ` +
+      `¿Quieres que te ayude a agendar una cita o prefieres que te pase información por aquí?`;
+
+    // 4) Enviar WhatsApp
+    await sendWhatsAppText(f.wa_from, msg);
+
+    // 5) Guardar evento outbound
+    await pool.query(
+      `
+      insert into events (client_id, lead_id, type, payload)
+      values ($1, $2, 'followup_sent', jsonb_build_object('step', $3::int, 'text', $4::text))
+      `,
+      [f.client_id, f.lead_id, f.step, msg]
+    );
+
+    // 6) Programar siguiente paso (1 hora) o desactivar si quieres solo 1 toque
+    await pool.query(
+      `
+      update lead_followups
+      set step = step + 1,
+          next_run_at = now() + interval '1 hour',
+          updated_at = now()
+      where client_id = $1 and lead_id = $2
+      `,
+      [f.client_id, f.lead_id]
+    );
+
+    processed++;
+  }
+
+  return { processed, candidates: rows.length };
+}
+
+// Endpoint “cron” protegido por token
+app.get("/cron/followups", async (req, res) => {
+  try {
+    const token = req.query.token;
+    if (!token || token !== process.env.CRON_TOKEN) {
+      return res.status(401).send("unauthorized");
+    }
+
+    const result = await runFollowups();
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error("CRON FOLLOWUPS ERROR ❌", e);
+    res.status(500).json({ ok: false });
+  }
+});
+
 /* ========================================================================== */
 /*                               Meta Webhook POST                            */
 /* ========================================================================== */
