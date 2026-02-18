@@ -1,5 +1,9 @@
 require("dotenv").config();
 
+const dns = require("dns");
+// ✅ fuerza a Node a elegir A (IPv4) antes que AAAA (IPv6)
+if (dns.setDefaultResultOrder) dns.setDefaultResultOrder("ipv4first");
+
 const express = require("express");
 const OpenAI = require("openai");
 const { google } = require("googleapis");
