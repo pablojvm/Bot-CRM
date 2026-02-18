@@ -32,28 +32,39 @@ ESTILO
 - No inventes información. Si falta un dato, pregunta.
 - Si el usuario saluda, responde con un saludo corporativo y ofrece ayuda.
 
+PRODUCTOS DISPONIBLES (menciónalos solo si encajan con lo que pide)
+- Generador de facturas
+- Generador de horarios/turnos
+- Asistente virtual con IA
+- OCR / CRM propio
+- Automatizaciones personalizadas
+- Bots de whatsapp
+
 OBJETIVO
-1) Entender la intención del cliente.
-2) Resolver dudas rápidas.
-3) Si la intención es compatible con una cita (o el usuario lo sugiere), guiar a agendar.
+1) Identificar la intención del cliente (qué necesita).
+2) Recomendar el producto adecuado (si aplica).
+3) Cuando haya interés real, guiar hacia agendar una llamada.
 
 INTENCIONES (clasifica mentalmente)
-- INFO: pide información general (servicios, precios, horarios, ubicación, proceso).
-- SOPORTE: problema o incidencia.
-- CITA: quiere reservar, ver disponibilidad, cambiar/cancelar.
-- OTRO: no encaja.
+- INFO: información general o curiosidad
+- NECESIDAD: describe un problema/objetivo (quiere solución)
+- CITA: quiere reservar / ver disponibilidad / cambiar / cancelar
+- SOPORTE: incidencia técnica
+- OTRO
 
-REGLAS PARA EMPUJAR A CITA (cuando ya tengas la intención)
-- Si CITA: ofrece directamente agendar y pide disponibilidad si hace falta.
-- Si INFO o SOPORTE y notas interés claro (pregunta por precio + “quiero” / “me interesa” / “cuando puedo” / “hablar”): propone cita.
-- No presiones: una pregunta y opciones.
+REGLAS PARA CERRAR CON CITA
+- Si CITA: ofrece agendar directamente.
+- Si NECESIDAD: recomienda 1 producto y propone llamada para aterrizar el caso.
+- Si preguntan por precio: indica que depende del alcance y propone llamada.
+- Haz una sola pregunta por mensaje para avanzar.
 
-DATOS A PEDIR PARA CITA (solo los mínimos)
-- Motivo (si no está claro).
-- Preferencia de día y franja (mañana/tarde) o confirma si vale cualquier hora.
+DATOS A PEDIR (mínimos)
+- Qué quiere lograr / para qué lo necesita.
+- Si aplica: volumen aproximado (ej. nº facturas/mes, nº turnos, nº clientes).
+- Disponibilidad: esta semana (mañana/tarde) o propone cita si el usuario lo pide.
 
-IMPORTANTE SOBRE LA AGENDA
-- Si el usuario quiere cita, termina con una pregunta concreta para avanzar.
+IMPORTANTE
+- Si el usuario muestra interés, termina con una pregunta concreta para avanzar.
 `.trim(),
       },
       { role: "user", content: userMessage },
@@ -367,21 +378,55 @@ app.post("/webhook", async (req, res) => {
     const outLeadId = r.rows?.[0]?.out_lead_id;
     if (!outLeadId) return res.sendStatus(200);
 
-    // FACTURAS: si es cliente habilitado y pide factura -> manda link y corta
-    if (wantsInvoice(text)) {
-      const leadPerm = await pool.query("select can_invoice from leads where id = $1", [
-        outLeadId,
-      ]);
-      const canInvoice = leadPerm.rows?.[0]?.can_invoice === true;
+   // FACTURAS: si pide factura
+if (wantsInvoice(text)) {
+  const leadPerm = await pool.query("select can_invoice from leads where id = $1", [outLeadId]);
+  const canInvoice = leadPerm.rows?.[0]?.can_invoice === true;
 
-      if (canInvoice) {
-        await sendWhatsAppText(
-          waFrom,
-          `Hola${name ? `, ${name}` : ""}. Aquí tienes el enlace para generar facturas:\n${INVOICE_URL}`
-        );
-        return res.sendStatus(200);
-      }
-    }
+  // ✅ Cliente reconocido: mandar enlace
+  if (canInvoice) {
+    await sendWhatsAppText(
+      waFrom,
+      `Hola${name ? `, ${name}` : ""}. Aquí tienes el enlace para generar facturas:\n${INVOICE_URL}`
+    );
+    return res.sendStatus(200);
+  }
+
+  // ❌ No reconocido: ofrecer cita para contratar el servicio (usa agenda real)
+  const now = new Date();
+  const timeMinISO = now.toISOString();
+  const timeMax = new Date(now);
+  timeMax.setDate(timeMax.getDate() + 7);
+  const timeMaxISO = timeMax.toISOString();
+
+  const busy = await getBusyRanges({ clientId, timeMinISO, timeMaxISO });
+  const slots = generateSlots1h({ now, days: 7, count: 3, busyRanges: busy });
+
+  if (!slots.length) {
+    await sendWhatsAppText(
+      waFrom,
+      "Puedo ayudarte con el generador de facturas. Esta semana no veo huecos disponibles. ¿Te va bien la semana que viene?"
+    );
+    return res.sendStatus(200);
+  }
+
+  await pool.query(
+    `insert into scheduling_state (client_id, lead_id, proposed, updated_at)
+     values ($1,$2,$3::jsonb, now())
+     on conflict (client_id, lead_id)
+     do update set proposed = excluded.proposed, updated_at = now()`,
+    [clientId, outLeadId, JSON.stringify(slots)]
+  );
+
+  const msgText =
+    "Puedo ayudarte a activar el generador de facturas para tu negocio.\n" +
+    "Tengo estos huecos para una llamada (1 hora):\n" +
+    formatSlotsES(slots) +
+    "\n\nResponde con 1, 2 o 3 para reservar.";
+
+  await sendWhatsAppText(waFrom, msgText);
+  return res.sendStatus(200);
+}
 
     // AGENDA (1h)
     if (wantsAppointment(text)) {
