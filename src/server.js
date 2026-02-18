@@ -3,12 +3,96 @@ require("dotenv").config();
 const express = require("express");
 const OpenAI = require("openai");
 const { google } = require("googleapis");
+const nodemailer = require("nodemailer");
 const pool = require("../db");
 
 const app = express();
 app.use(express.json({ type: "*/*" }));
 
 const INVOICE_URL = "https://guibear0.github.io/Facturas_generator/";
+
+/* ========================================================================== */
+/*                                Email + ICS                                 */
+/* ========================================================================== */
+
+function buildICS({ title, description, startISO, endISO }) {
+  const dt = (iso) =>
+    new Date(iso)
+      .toISOString()
+      .replace(/[-:]/g, "")
+      .replace(/\.\d{3}Z$/, "Z"); // YYYYMMDDTHHMMSSZ
+
+  const uid = `${Date.now()}@herion`;
+
+  return [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Herion//Bot//ES",
+    "CALSCALE:GREGORIAN",
+    "METHOD:REQUEST",
+    "BEGIN:VEVENT",
+    `UID:${uid}`,
+    `DTSTAMP:${dt(new Date().toISOString())}`,
+    `DTSTART:${dt(startISO)}`,
+    `DTEND:${dt(endISO)}`,
+    `SUMMARY:${title}`,
+    `DESCRIPTION:${description.replace(/\n/g, "\\n")}`,
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].join("\r\n");
+}
+
+function getMailer() {
+  return nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT || 587),
+    secure: false, // 587 STARTTLS
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
+  });
+}
+
+async function sendAppointmentEmail({ toEmail, name, startISO, endISO }) {
+  const startLocal = new Date(startISO).toLocaleString("es-ES", { timeZone: "Europe/Madrid" });
+
+  const subject = "Tu cita con Herion";
+  const text =
+    `Hola${name ? `, ${name}` : ""}.\n\n` +
+    `Te envío la invitación de calendario para tu cita con Herion.\n` +
+    `Fecha y hora: ${startLocal}\n` +
+    `Duración: 1 hora\n\n` +
+    `Un saludo,\nHerion`;
+
+  const ics = buildICS({
+    title: "Cita con Herion",
+    description: "Cita agendada desde WhatsApp con el asistente de Herion.",
+    startISO,
+    endISO,
+  });
+
+  const mailer = getMailer();
+
+  await mailer.sendMail({
+    from: process.env.MAIL_FROM || process.env.SMTP_USER,
+    to: toEmail,
+    subject,
+    text,
+    attachments: [
+      {
+        filename: "cita-herion.ics",
+        content: ics,
+        contentType: "text/calendar; charset=utf-8; method=REQUEST",
+      },
+    ],
+  });
+}
+
+function extractEmail(text = "") {
+  const m = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  return m ? m[0] : null;
+}
 
 /* ========================================================================== */
 /*                                   OpenAI                                   */
@@ -106,7 +190,7 @@ async function sendWhatsAppText(to, message) {
 }
 
 /* ========================================================================== */
-/*                           Google Calendar + OAuth                           */
+/*                           Google Calendar + OAuth                          */
 /* ========================================================================== */
 
 function getGoogleOAuthClient() {
@@ -184,9 +268,7 @@ app.get("/google/oauth/callback", async (req, res) => {
     const { tokens } = await oauth2Client.getToken(code);
 
     if (!tokens.refresh_token) {
-      return res
-        .status(400)
-        .send("No refresh_token received. Try again: /google/oauth/start");
+      return res.status(400).send("No refresh_token received. Try again: /google/oauth/start");
     }
 
     await pool.query(
@@ -225,7 +307,6 @@ function overlapsBusy(start, end, busyRanges) {
   });
 }
 
-// N huecos de 1h entre 10:00-19:00 (lun-vie)
 function generateSlots1h({ now = new Date(), days = 7, count = 3, busyRanges = [] }) {
   const slots = [];
   const startFrom = ceilToNextMinutes(now, 30);
@@ -334,10 +415,13 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
+/* ========================================================================== */
+/*                                Follow-ups cron                             */
+/* ========================================================================== */
+
 async function runFollowups() {
   const clientId = "default";
 
-  // 1) Coger candidatos vencidos (limit por seguridad)
   const { rows } = await pool.query(
     `
     select lf.client_id, lf.lead_id, lf.step, lf.next_run_at, l.wa_from, l.name
@@ -356,7 +440,6 @@ async function runFollowups() {
   let processed = 0;
 
   for (const f of rows) {
-    // 2) “Lock” optimista: solo procesa si sigue vencido y activo
     const lock = await pool.query(
       `
       update lead_followups
@@ -370,17 +453,14 @@ async function runFollowups() {
       [f.client_id, f.lead_id]
     );
 
-    if (lock.rowCount === 0) continue; // otro proceso ya lo pilló
+    if (lock.rowCount === 0) continue;
 
-    // 3) Mensaje (simple). Luego lo afinamos con prompt/plantillas.
     const msg =
       `Hola${f.name ? `, ${f.name}` : ""}. ` +
       `¿Quieres que te ayude a agendar una cita o prefieres que te pase información por aquí?`;
 
-    // 4) Enviar WhatsApp
     await sendWhatsAppText(f.wa_from, msg);
 
-    // 5) Guardar evento outbound
     await pool.query(
       `
       insert into events (client_id, lead_id, type, payload)
@@ -389,7 +469,6 @@ async function runFollowups() {
       [f.client_id, f.lead_id, f.step, msg]
     );
 
-    // 6) Programar siguiente paso (1 hora) o desactivar si quieres solo 1 toque
     await pool.query(
       `
       update lead_followups
@@ -407,18 +486,88 @@ async function runFollowups() {
   return { processed, candidates: rows.length };
 }
 
-// Endpoint “cron” protegido por token
 app.get("/cron/followups", async (req, res) => {
   try {
     const token = req.query.token;
-    if (!token || token !== process.env.CRON_TOKEN) {
-      return res.status(401).send("unauthorized");
-    }
+    if (!token || token !== process.env.CRON_TOKEN) return res.status(401).send("unauthorized");
 
     const result = await runFollowups();
     res.json({ ok: true, ...result });
   } catch (e) {
     console.error("CRON FOLLOWUPS ERROR ❌", e);
+    res.status(500).json({ ok: false });
+  }
+});
+
+/* ========================================================================== */
+/*                             Appointment reminders cron                      */
+/* ========================================================================== */
+
+async function runAppointmentReminders() {
+  const clientId = "default";
+
+  const { rows } = await pool.query(
+    `
+    select ar.client_id, ar.lead_id, ar.event_id, ar.kind, ar.start_at, l.wa_from, l.name
+    from appointment_reminders ar
+    join leads l on l.id = ar.lead_id
+    where ar.client_id = $1
+      and ar.is_sent = false
+      and ar.remind_at <= now()
+      and l.wa_from is not null
+    order by ar.remind_at asc
+    limit 30
+    `,
+    [clientId]
+  );
+
+  let processed = 0;
+
+  for (const r of rows) {
+    const lock = await pool.query(
+      `
+      update appointment_reminders
+      set is_sent = true, sent_at = now()
+      where client_id = $1 and event_id = $2 and kind = $3 and is_sent = false
+      returning client_id
+      `,
+      [r.client_id, r.event_id, r.kind]
+    );
+
+    if (lock.rowCount === 0) continue;
+
+    const startLocal = new Date(r.start_at).toLocaleString("es-ES", { timeZone: "Europe/Madrid" });
+
+    const msg =
+      r.kind === "24h"
+        ? `Hola${r.name ? `, ${r.name}` : ""}. Te recuerdo que mañana tienes una cita con Herion.\nFecha y hora: ${startLocal}\n\nSi necesitas cambiarla, dímelo por aquí.`
+        : `Hola${r.name ? `, ${r.name}` : ""}. Recordatorio: tienes una cita con Herion en unas 2 horas.\nFecha y hora: ${startLocal}\n\nSi necesitas cambiarla, dímelo por aquí.`;
+
+    await sendWhatsAppText(r.wa_from, msg);
+
+    await pool.query(
+      `
+      insert into events (client_id, lead_id, type, payload)
+      values ($1, $2, 'appointment_reminder_sent', jsonb_build_object('kind',$3::text,'eventId',$4::text,'text',$5::text))
+      `,
+      [r.client_id, r.lead_id, r.kind, r.event_id, msg]
+    );
+
+    processed++;
+  }
+
+  return { processed, candidates: rows.length };
+}
+
+app.get("/cron/reminders", async (req, res) => {
+  try {
+    const token = req.query.token;
+    if (!token || token !== process.env.CRON_TOKEN) return res.status(401).send("unauthorized");
+
+    const result = await runAppointmentReminders();
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error("CRON REMINDERS ERROR ❌", e);
     res.status(500).json({ ok: false });
   }
 });
@@ -439,16 +588,13 @@ app.post("/webhook", async (req, res) => {
     const clientId = "default";
     const messageId = msg.id;
 
-    // Dedupe: evita dobles respuestas/citas por reintentos de Meta
+    // Dedupe
     if (messageId) {
       const dedupe = await pool.query(
         "insert into inbound_dedupe (client_id, message_id) values ($1,$2) on conflict do nothing",
         [clientId, messageId]
       );
-      if (dedupe.rowCount === 0) {
-        console.log("DUPLICATE MESSAGE SKIPPED ✅", messageId);
-        return res.sendStatus(200);
-      }
+      if (dedupe.rowCount === 0) return res.sendStatus(200);
     }
 
     const phone = msg.from;
@@ -456,68 +602,119 @@ app.post("/webhook", async (req, res) => {
     const name = change?.contacts?.[0]?.profile?.name || null;
     const waFrom = phone ? `+${phone}` : null;
 
-    // Guardar inbound + conseguir lead_id
+    // Guardar inbound + lead
     const r = await pool.query("select * from upsert_inbound_whatsapp($1,$2,$3,$4)", [
       clientId,
       waFrom,
       name,
       text,
     ]);
-
     const outLeadId = r.rows?.[0]?.out_lead_id;
     if (!outLeadId) return res.sendStatus(200);
 
-   // FACTURAS: si pide factura
-if (wantsInvoice(text)) {
-  const leadPerm = await pool.query("select can_invoice from leads where id = $1", [outLeadId]);
-  const canInvoice = leadPerm.rows?.[0]?.can_invoice === true;
+    /* ------------------------ Email flow: esperando correo ------------------------ */
+    {
+      const { rows: st } = await pool.query(
+        "select awaiting_email, last_event from scheduling_state where client_id=$1 and lead_id=$2",
+        [clientId, outLeadId]
+      );
 
-  // ✅ Cliente reconocido: mandar enlace
-  if (canInvoice) {
-    await sendWhatsAppText(
-      waFrom,
-      `Hola${name ? `, ${name}` : ""}. Aquí tienes el enlace para generar facturas:\n${INVOICE_URL}`
-    );
-    return res.sendStatus(200);
-  }
+      const awaiting = st[0]?.awaiting_email === true;
+      const email = extractEmail(text);
 
-  // ❌ No reconocido: ofrecer cita para contratar el servicio (usa agenda real)
-  const now = new Date();
-  const timeMinISO = now.toISOString();
-  const timeMax = new Date(now);
-  timeMax.setDate(timeMax.getDate() + 7);
-  const timeMaxISO = timeMax.toISOString();
+      if (awaiting && email) {
+        const lastEvent = st[0]?.last_event || {};
+        const startISO = lastEvent.startISO;
+        const endISO = lastEvent.endISO;
 
-  const busy = await getBusyRanges({ clientId, timeMinISO, timeMaxISO });
-  const slots = generateSlots1h({ now, days: 7, count: 3, busyRanges: busy });
+        if (!startISO || !endISO) {
+          await sendWhatsAppText(
+            waFrom,
+            "Genial. ¿Me confirmas de nuevo que quieres que te envíe la cita por email? (No encuentro la cita asociada)."
+          );
+          return res.sendStatus(200);
+        }
 
-  if (!slots.length) {
-    await sendWhatsAppText(
-      waFrom,
-      "Puedo ayudarte con el generador de facturas. Esta semana no veo huecos disponibles. ¿Te va bien la semana que viene?"
-    );
-    return res.sendStatus(200);
-  }
+        await pool.query("update leads set email=$1 where id=$2", [email, outLeadId]);
 
-  await pool.query(
-    `insert into scheduling_state (client_id, lead_id, proposed, updated_at)
-     values ($1,$2,$3::jsonb, now())
-     on conflict (client_id, lead_id)
-     do update set proposed = excluded.proposed, updated_at = now()`,
-    [clientId, outLeadId, JSON.stringify(slots)]
-  );
+        try {
+          await sendAppointmentEmail({ toEmail: email, name, startISO, endISO });
+          await sendWhatsAppText(waFrom, `Perfecto. Te la acabo de enviar a ${email} ✅`);
+        } catch (e) {
+          console.error("EMAIL SEND ERROR ❌", e);
+          await sendWhatsAppText(
+            waFrom,
+            "He intentado enviarlo pero ha fallado el correo. ¿Puedes confirmarme el email o te lo envío más tarde?"
+          );
+          return res.sendStatus(200);
+        }
 
-  const msgText =
-    "Puedo ayudarte a activar el generador de facturas para tu negocio.\n" +
-    "Tengo estos huecos para una llamada (1 hora):\n" +
-    formatSlotsES(slots) +
-    "\n\nResponde con 1, 2 o 3 para reservar.";
+        await pool.query(
+          "update scheduling_state set awaiting_email=false, updated_at=now() where client_id=$1 and lead_id=$2",
+          [clientId, outLeadId]
+        );
 
-  await sendWhatsAppText(waFrom, msgText);
-  return res.sendStatus(200);
-}
+        await pool.query(
+          `
+          insert into events (client_id, lead_id, type, payload)
+          values ($1,$2,'appointment_email_sent', jsonb_build_object('email',$3::text))
+          `,
+          [clientId, outLeadId, email]
+        );
 
-    // AGENDA (1h)
+        return res.sendStatus(200);
+      }
+    }
+
+    /* ---------------------------------- FACTURAS --------------------------------- */
+    if (wantsInvoice(text)) {
+      const leadPerm = await pool.query("select can_invoice from leads where id = $1", [outLeadId]);
+      const canInvoice = leadPerm.rows?.[0]?.can_invoice === true;
+
+      if (canInvoice) {
+        await sendWhatsAppText(
+          waFrom,
+          `Hola${name ? `, ${name}` : ""}. Aquí tienes el enlace para generar facturas:\n${INVOICE_URL}`
+        );
+        return res.sendStatus(200);
+      }
+
+      const now = new Date();
+      const timeMinISO = now.toISOString();
+      const timeMax = new Date(now);
+      timeMax.setDate(timeMax.getDate() + 7);
+      const timeMaxISO = timeMax.toISOString();
+
+      const busy = await getBusyRanges({ clientId, timeMinISO, timeMaxISO });
+      const slots = generateSlots1h({ now, days: 7, count: 3, busyRanges: busy });
+
+      if (!slots.length) {
+        await sendWhatsAppText(
+          waFrom,
+          "Puedo ayudarte con el generador de facturas. Esta semana no veo huecos disponibles. ¿Te va bien la semana que viene?"
+        );
+        return res.sendStatus(200);
+      }
+
+      await pool.query(
+        `insert into scheduling_state (client_id, lead_id, proposed, updated_at)
+         values ($1,$2,$3::jsonb, now())
+         on conflict (client_id, lead_id)
+         do update set proposed = excluded.proposed, updated_at = now()`,
+        [clientId, outLeadId, JSON.stringify(slots)]
+      );
+
+      const msgText =
+        "Puedo ayudarte a activar el generador de facturas para tu negocio.\n" +
+        "Tengo estos huecos para una llamada (1 hora):\n" +
+        formatSlotsES(slots) +
+        "\n\nResponde con 1, 2 o 3 para reservar.";
+
+      await sendWhatsAppText(waFrom, msgText);
+      return res.sendStatus(200);
+    }
+
+    /* ----------------------------------- AGENDA ---------------------------------- */
     if (wantsAppointment(text)) {
       const choice = parseChoice(text);
 
@@ -564,10 +761,81 @@ if (wantsInvoice(text)) {
           [clientId, outLeadId, ev.id, picked.startISO, picked.endISO]
         );
 
+        // Programar recordatorios (24h y 2h)
+        const startAt = new Date(picked.startISO);
+        const remind24h = new Date(startAt.getTime() - 24 * 60 * 60 * 1000);
+        const remind2h = new Date(startAt.getTime() - 2 * 60 * 60 * 1000);
+
+        await pool.query(
+          `
+          insert into appointment_reminders (client_id, lead_id, event_id, start_at, remind_at, kind)
+          values
+            ($1,$2,$3,$4,$5,'24h'),
+            ($1,$2,$3,$4,$6,'2h')
+          on conflict do nothing
+          `,
+          [clientId, outLeadId, ev.id, startAt.toISOString(), remind24h.toISOString(), remind2h.toISOString()]
+        );
+
+        // Guardar estado: pedir email para enviar invitación
+        await pool.query(
+          `
+          update scheduling_state
+          set awaiting_email = true,
+              last_event = jsonb_build_object(
+                'eventId', $3::text,
+                'startISO', $4::text,
+                'endISO', $5::text
+              ),
+              updated_at = now()
+          where client_id = $1 and lead_id = $2
+          `,
+          [clientId, outLeadId, ev.id, picked.startISO, picked.endISO]
+        );
+
+        // Si ya tenemos email guardado -> enviarlo directo (sin pedirlo)
+        const { rows: leadRows } = await pool.query("select email from leads where id=$1", [outLeadId]);
+        const savedEmail = leadRows?.[0]?.email || null;
+
+        if (savedEmail) {
+          try {
+            await sendAppointmentEmail({
+              toEmail: savedEmail,
+              name,
+              startISO: picked.startISO,
+              endISO: picked.endISO,
+            });
+
+            await pool.query(
+              "update scheduling_state set awaiting_email=false, updated_at=now() where client_id=$1 and lead_id=$2",
+              [clientId, outLeadId]
+            );
+
+            await pool.query(
+              `insert into events (client_id, lead_id, type, payload)
+               values ($1,$2,'appointment_email_sent', jsonb_build_object('email',$3::text))`,
+              [clientId, outLeadId, savedEmail]
+            );
+
+            const confirm =
+              `Perfecto. Cita reservada ✅\n` +
+              `Inicio: ${new Date(picked.startISO).toLocaleString("es-ES", { timeZone: "Europe/Madrid" })}\n` +
+              `Duración: 1 hora\n\n` +
+              `Te acabo de enviar la invitación a ${savedEmail}.`;
+
+            await sendWhatsAppText(waFrom, confirm);
+            return res.sendStatus(200);
+          } catch (e) {
+            console.error("EMAIL SEND ERROR ❌", e);
+            // cae a pedir email manualmente
+          }
+        }
+
         const confirm =
-          `Perfecto. Cita reservada.\n` +
+          `Perfecto. Cita reservada ✅\n` +
           `Inicio: ${new Date(picked.startISO).toLocaleString("es-ES", { timeZone: "Europe/Madrid" })}\n` +
-          `Duración: 1 hora`;
+          `Duración: 1 hora\n\n` +
+          `Si me dices tu correo, te envío la invitación para añadirla a tu calendario.`;
 
         await sendWhatsAppText(waFrom, confirm);
         return res.sendStatus(200);
@@ -608,7 +876,7 @@ if (wantsInvoice(text)) {
       return res.sendStatus(200);
     }
 
-    // Respuesta normal IA
+    /* ---------------------------------- IA normal ------------------------------- */
     let aiReply;
     try {
       aiReply = await generateReply(text);
