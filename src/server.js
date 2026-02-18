@@ -1,13 +1,18 @@
+/**
+ * server.js (clean)
+ * - Quita Nodemailer/SMTP (Railway bloquea SMTP)
+ * - Envía invitación usando Google Calendar (attendees + sendUpdates: "all")
+ * - Mantiene: dedupe, agenda, facturas, followups, reminders
+ */
+
 require("dotenv").config();
 
 const dns = require("dns");
-// ✅ fuerza a Node a elegir A (IPv4) antes que AAAA (IPv6)
 if (dns.setDefaultResultOrder) dns.setDefaultResultOrder("ipv4first");
 
 const express = require("express");
 const OpenAI = require("openai");
 const { google } = require("googleapis");
-const nodemailer = require("nodemailer");
 const pool = require("../db");
 
 const app = express();
@@ -16,93 +21,28 @@ app.use(express.json({ type: "*/*" }));
 const INVOICE_URL = "https://guibear0.github.io/Facturas_generator/";
 
 /* ========================================================================== */
-/*                                Email + ICS                                 */
+/*                                   Utils                                    */
 /* ========================================================================== */
-
-function buildICS({ title, description, startISO, endISO }) {
-  const dt = (iso) =>
-    new Date(iso)
-      .toISOString()
-      .replace(/[-:]/g, "")
-      .replace(/\.\d{3}Z$/, "Z"); // YYYYMMDDTHHMMSSZ
-
-  const uid = `${Date.now()}@herion`;
-
-  return [
-    "BEGIN:VCALENDAR",
-    "VERSION:2.0",
-    "PRODID:-//Herion//Bot//ES",
-    "CALSCALE:GREGORIAN",
-    "METHOD:REQUEST",
-    "BEGIN:VEVENT",
-    `UID:${uid}`,
-    `DTSTAMP:${dt(new Date().toISOString())}`,
-    `DTSTART:${dt(startISO)}`,
-    `DTEND:${dt(endISO)}`,
-    `SUMMARY:${title}`,
-    `DESCRIPTION:${description.replace(/\n/g, "\\n")}`,
-    "END:VEVENT",
-    "END:VCALENDAR",
-  ].join("\r\n");
-}
-
-function getMailer() {
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,      // smtp.gmail.com
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: false,                    // 587 STARTTLS
-    requireTLS: true,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-    // ✅ fuerza IPv4
-    family: 4,
-    // ✅ timeouts razonables
-    connectionTimeout: 15000,
-    greetingTimeout: 15000,
-    socketTimeout: 20000,
-  });
-}
-
-async function sendAppointmentEmail({ toEmail, name, startISO, endISO }) {
-  const startLocal = new Date(startISO).toLocaleString("es-ES", { timeZone: "Europe/Madrid" });
-
-  const subject = "Tu cita con Herion";
-  const text =
-    `Hola${name ? `, ${name}` : ""}.\n\n` +
-    `Te envío la invitación de calendario para tu cita con Herion.\n` +
-    `Fecha y hora: ${startLocal}\n` +
-    `Duración: 1 hora\n\n` +
-    `Un saludo,\nHerion`;
-
-  const ics = buildICS({
-    title: "Cita con Herion",
-    description: "Cita agendada desde WhatsApp con el asistente de Herion.",
-    startISO,
-    endISO,
-  });
-
-  const mailer = getMailer();
-
-  await mailer.sendMail({
-    from: process.env.MAIL_FROM || process.env.SMTP_USER,
-    to: toEmail,
-    subject,
-    text,
-    attachments: [
-      {
-        filename: "cita-herion.ics",
-        content: ics,
-        contentType: "text/calendar; charset=utf-8; method=REQUEST",
-      },
-    ],
-  });
-}
 
 function extractEmail(text = "") {
   const m = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   return m ? m[0] : null;
+}
+
+function wantsAppointment(text = "") {
+  const t = text.toLowerCase();
+  return /(cita|reserv|agenda|agendar|turno|hueco|disponibil|mañana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|\b\d{1,2}:\d{2}\b|\b\d{1,2}\b)/.test(
+    t
+  );
+}
+
+function parseChoice(text = "") {
+  const m = text.trim().match(/^([1-3])\b/);
+  return m ? Number(m[1]) : null;
+}
+
+function wantsInvoice(text = "") {
+  return /(factura|facturación|facturacion|iva|pdf|cobro|pago)/i.test(text);
 }
 
 /* ========================================================================== */
@@ -256,6 +196,36 @@ async function createCalendarEvent({ clientId, summary, description, startISO, e
   return ev.data;
 }
 
+/**
+ * ✅ Envía invitación SIN SMTP:
+ * - añade attendee al evento
+ * - pide a Google enviar la invitación por email (sendUpdates: "all")
+ */
+async function addAttendeeAndSendInvite({ clientId, eventId, attendeeEmail }) {
+  const calendar = await getGoogleCalendarClient(clientId);
+
+  const { data: event } = await calendar.events.get({
+    calendarId: "primary",
+    eventId,
+  });
+
+  const attendees = Array.isArray(event.attendees) ? event.attendees : [];
+  const exists = attendees.some(
+    (a) => (a.email || "").toLowerCase() === attendeeEmail.toLowerCase()
+  );
+
+  if (!exists) attendees.push({ email: attendeeEmail });
+
+  await calendar.events.patch({
+    calendarId: "primary",
+    eventId,
+    sendUpdates: "all", // 👈 Google manda la invitación
+    requestBody: { attendees },
+  });
+
+  return true;
+}
+
 /* -------------------------------- OAuth routes ----------------------------- */
 
 app.get("/google/oauth/start", (req, res) => {
@@ -367,22 +337,6 @@ function formatSlotsES(slots) {
       return `${i + 1}) ${fmt.format(d).replace(",", "")}`;
     })
     .join("\n");
-}
-
-function wantsAppointment(text = "") {
-  const t = text.toLowerCase();
-  return /(cita|reserv|agenda|agendar|turno|hueco|disponibil|mañana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|\b\d{1,2}:\d{2}\b|\b\d{1,2}\b)/.test(
-    t
-  );
-}
-
-function parseChoice(text = "") {
-  const m = text.trim().match(/^([1-3])\b/);
-  return m ? Number(m[1]) : null;
-}
-
-function wantsInvoice(text = "") {
-  return /(factura|facturación|facturacion|iva|pdf|cobro|pago)/i.test(text);
 }
 
 /* ========================================================================== */
@@ -623,7 +577,7 @@ app.post("/webhook", async (req, res) => {
     const outLeadId = r.rows?.[0]?.out_lead_id;
     if (!outLeadId) return res.sendStatus(200);
 
-    /* ------------------------ Email flow: esperando correo ------------------------ */
+    /* ------------------------ Invitación: esperando correo ------------------------ */
     {
       const { rows: st } = await pool.query(
         "select awaiting_email, last_event from scheduling_state where client_id=$1 and lead_id=$2",
@@ -635,42 +589,44 @@ app.post("/webhook", async (req, res) => {
 
       if (awaiting && email) {
         const lastEvent = st[0]?.last_event || {};
-        const startISO = lastEvent.startISO;
-        const endISO = lastEvent.endISO;
+        const eventId = lastEvent.eventId;
 
-        if (!startISO || !endISO) {
+        if (!eventId) {
           await sendWhatsAppText(
             waFrom,
-            "Genial. ¿Me confirmas de nuevo que quieres que te envíe la cita por email? (No encuentro la cita asociada)."
+            "Genial. Me falta enlazar la cita. ¿Puedes decirme si quieres reservar una cita y te propongo huecos?"
           );
           return res.sendStatus(200);
         }
 
+        // guardar email en lead
         await pool.query("update leads set email=$1 where id=$2", [email, outLeadId]);
 
         try {
-          await sendAppointmentEmail({ toEmail: email, name, startISO, endISO });
-          await sendWhatsAppText(waFrom, `Perfecto. Te la acabo de enviar a ${email} ✅`);
+          await addAttendeeAndSendInvite({ clientId, eventId, attendeeEmail: email });
+          await sendWhatsAppText(waFrom, `Perfecto ✅ Te he enviado la invitación a ${email}.`);
         } catch (e) {
-          console.error("EMAIL SEND ERROR ❌", e);
+          console.error("CAL INVITE ERROR ❌", e);
           await sendWhatsAppText(
             waFrom,
-            "He intentado enviarlo pero ha fallado el correo. ¿Puedes confirmarme el email o te lo envío más tarde?"
+            "He intentado enviar la invitación pero ha fallado. ¿Puedes confirmar el correo o lo reintentamos en un momento?"
           );
           return res.sendStatus(200);
         }
 
+        // cerrar estado
         await pool.query(
           "update scheduling_state set awaiting_email=false, updated_at=now() where client_id=$1 and lead_id=$2",
           [clientId, outLeadId]
         );
 
+        // log evento
         await pool.query(
           `
           insert into events (client_id, lead_id, type, payload)
-          values ($1,$2,'appointment_email_sent', jsonb_build_object('email',$3::text))
+          values ($1,$2,'appointment_invite_sent', jsonb_build_object('email',$3::text,'eventId',$4::text))
           `,
-          [clientId, outLeadId, email]
+          [clientId, outLeadId, email, eventId]
         );
 
         return res.sendStatus(200);
@@ -690,6 +646,7 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
+      // no reconocido => ofrecer cita
       const now = new Date();
       const timeMinISO = now.toISOString();
       const timeMax = new Date(now);
@@ -785,10 +742,17 @@ app.post("/webhook", async (req, res) => {
             ($1,$2,$3,$4,$6,'2h')
           on conflict do nothing
           `,
-          [clientId, outLeadId, ev.id, startAt.toISOString(), remind24h.toISOString(), remind2h.toISOString()]
+          [
+            clientId,
+            outLeadId,
+            ev.id,
+            startAt.toISOString(),
+            remind24h.toISOString(),
+            remind2h.toISOString(),
+          ]
         );
 
-        // Guardar estado: pedir email para enviar invitación
+        // Guardar estado (pedir email para enviar invitación)
         await pool.query(
           `
           update scheduling_state
@@ -804,18 +768,13 @@ app.post("/webhook", async (req, res) => {
           [clientId, outLeadId, ev.id, picked.startISO, picked.endISO]
         );
 
-        // Si ya tenemos email guardado -> enviarlo directo (sin pedirlo)
+        // Si ya tenemos email guardado => enviar invitación sin preguntar
         const { rows: leadRows } = await pool.query("select email from leads where id=$1", [outLeadId]);
         const savedEmail = leadRows?.[0]?.email || null;
 
         if (savedEmail) {
           try {
-            await sendAppointmentEmail({
-              toEmail: savedEmail,
-              name,
-              startISO: picked.startISO,
-              endISO: picked.endISO,
-            });
+            await addAttendeeAndSendInvite({ clientId, eventId: ev.id, attendeeEmail: savedEmail });
 
             await pool.query(
               "update scheduling_state set awaiting_email=false, updated_at=now() where client_id=$1 and lead_id=$2",
@@ -824,8 +783,8 @@ app.post("/webhook", async (req, res) => {
 
             await pool.query(
               `insert into events (client_id, lead_id, type, payload)
-               values ($1,$2,'appointment_email_sent', jsonb_build_object('email',$3::text))`,
-              [clientId, outLeadId, savedEmail]
+               values ($1,$2,'appointment_invite_sent', jsonb_build_object('email',$3::text,'eventId',$4::text))`,
+              [clientId, outLeadId, savedEmail, ev.id]
             );
 
             const confirm =
@@ -837,7 +796,7 @@ app.post("/webhook", async (req, res) => {
             await sendWhatsAppText(waFrom, confirm);
             return res.sendStatus(200);
           } catch (e) {
-            console.error("EMAIL SEND ERROR ❌", e);
+            console.error("CAL INVITE ERROR ❌", e);
             // cae a pedir email manualmente
           }
         }
