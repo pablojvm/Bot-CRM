@@ -537,6 +537,44 @@ app.get("/cron/reminders", async (req, res) => {
   }
 });
 
+// ==========================
+// Meta Lead Ads Webhook (GET)
+// ==========================
+app.get("/webhook/meta-leads", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode === "subscribe" && token === process.env.META_LEADS_VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
+  return res.sendStatus(403);
+});
+
+// ===========================
+// Meta Lead Ads Webhook (POST)
+// ===========================
+app.post("/webhook/meta-leads", async (req, res) => {
+  try {
+    // Meta puede reintentar: responde 200 rápido
+    const body = req.body;
+
+    // Lead Ads llegan por el "Page" object y el field "leadgen"
+    // (el payload incluye leadgen_id)
+    // Guardamos raw y ya lo procesaremos luego con un cron/worker.
+    await pool.query(
+      `insert into leads_inbox (source, raw_payload)
+       values ('meta_leadads', $1::jsonb)`,
+      [JSON.stringify(body)]
+    );
+
+    return res.sendStatus(200);
+  } catch (e) {
+    console.error("META LEADS WEBHOOK ERROR ❌", e);
+    return res.sendStatus(200);
+  }
+});
+
 /* ========================================================================== */
 /*                               Meta Webhook POST                            */
 /* ========================================================================== */
