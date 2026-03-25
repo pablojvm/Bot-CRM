@@ -1,50 +1,3 @@
-/**
- * server.js (Bell Moon Aesthetics) — listo para cuando Meta/WhatsApp esté aprobado
- *
- * ✅ Sin SMTP (Railway suele bloquear SMTP)
- * ✅ WhatsApp:
- *   - Texto normal (si no hay template aprobado)
- *   - Template (si defines TEMPLATE_NAME / TEMPLATE_LANG)
- * ✅ Google Calendar:
- *   - Crea evento
- *   - Envía invitación por email via Google (attendees + sendUpdates:"all")
- * ✅ CRM webhook:
- *   - /crm/new-lead -> envía WhatsApp (template o texto) con link de Fresha
- * ✅ Meta Lead Ads:
- *   - /webhook/meta-leads guarda en leads_inbox
- *   - /cron/process-leads procesa inbox (dedupe + upsert mínimo)
- * ✅ WhatsApp inbound:
- *   - /webhook recibe mensajes
- *   - agenda (propone huecos, reserva, pide email, envía invite Google)
- * ✅ Crons:
- *   - /cron/followups
- *   - /cron/reminders
- *
- * -------------------
- * ENV REQUERIDAS
- * -------------------
- * OPENAI_API_KEY
- * PHONE_NUMBER_ID
- * WHATSAPP_TOKEN
- * VERIFY_TOKEN
- *
- * CRON_TOKEN
- *
- * GOOGLE_CLIENT_ID
- * GOOGLE_CLIENT_SECRET
- * GOOGLE_REDIRECT_URL
- *
- * META_LEADS_VERIFY_TOKEN
- *
- * FRESHA_BOOKING_LINK
- *
- * (Opcional pero recomendado)
- * CRM_WEBHOOK_TOKEN
- * TEMPLATE_NAME            // nombre del template aprobado (p.ej. "bellmoon_welcome")
- * TEMPLATE_LANG            // p.ej. "en_GB" o "es_ES"
- * TEMPLATE_PARAM_MODE      // "name_first" | "name_and_link" | "link_only" (default: name_and_link)
- */
-
 require("dotenv").config();
 
 const dns = require("dns");
@@ -75,7 +28,7 @@ function normalizePhone(raw) {
   return cleaned.startsWith("+") ? cleaned : `+${cleaned}`;
 }
 
-// dedupe simple en memoria para CRM (evitar dobles envíos por reintentos)
+// Dedupe simple en memoria para CRM (evitar dobles envíos por reintentos)
 const RECENT = new Map();
 const DEDUPE_TTL_MS = 10 * 60 * 1000;
 function isDuplicate(key) {
@@ -88,9 +41,7 @@ function isDuplicate(key) {
 
 function wantsAppointment(text = "") {
   const t = text.toLowerCase();
-  return /(cita|reserv|agenda|agendar|turno|hueco|disponibil|book|booking|appointment|consult|consultation|slot|availability|mañana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|\b\d{1,2}:\d{2}\b)/.test(
-    t
-  );
+  return /(cita|reserv|agenda|agendar|turno|hueco|disponibil|book|booking|appointment|consult|consultation|slot|availability|mañana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|\b\d{1,2}:\d{2}\b)/.test(t);
 }
 
 function parseChoice(text = "") {
@@ -168,75 +119,6 @@ async function sendWhatsAppText(to, message) {
   return data;
 }
 
-async function sendWhatsAppTemplate(to, templateName, lang = "en_GB", params = []) {
-  if (!to) return null;
-
-  const url = `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`;
-
-  const body = {
-    messaging_product: "whatsapp",
-    to: to.replace("+", ""),
-    type: "template",
-    template: {
-      name: templateName,
-      language: { code: lang },
-    },
-  };
-
-  if (params.length) {
-    body.template.components = [
-      {
-        type: "body",
-        parameters: params.map((p) => ({ type: "text", text: String(p) })),
-      },
-    ];
-  }
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) console.error("WHATSAPP TEMPLATE ERROR ❌", data);
-  else console.log("WHATSAPP TEMPLATE SENT ✅", data);
-
-  return data;
-}
-
-async function sendWelcomeMessage({ waTo, name, link }) {
-  const template = process.env.TEMPLATE_NAME;
-  const lang = process.env.TEMPLATE_LANG || "en_GB";
-  const mode = (process.env.TEMPLATE_PARAM_MODE || "name_and_link").toLowerCase();
-
-  // Si hay template, úsalo (lo correcto para iniciar conversación con leads nuevos)
-  if (template) {
-    let params = [];
-    if (mode === "name_first") params = [name || "there"];
-    else if (mode === "link_only") params = [link];
-    else params = [name || "there", link];
-
-    try {
-      return await sendWhatsAppTemplate(waTo, template, lang, params);
-    } catch (e) {
-      console.error("TEMPLATE FALLBACK ERROR ❌", e);
-      // fallback a texto
-    }
-  }
-
-  // Fallback texto normal (para cuando aún no está aprobado el template)
-  const msg =
-    `Hi${name ? ` ${name}` : ""}! Thanks for reaching out to Bell Moon Aesthetics London. ` +
-    `You can book your consultation here: ${link}`;
-
-  return await sendWhatsAppText(waTo, msg);
-}
-
 /* ========================================================================== */
 /*                           Google Calendar + OAuth                          */
 /* ========================================================================== */
@@ -285,19 +167,14 @@ async function createCalendarEvent({ clientId, summary, description, startISO, e
     requestBody: {
       summary,
       description,
-      start: { dateTime: startISO, timeZone: "Europe/Madrid" },
-      end: { dateTime: endISO, timeZone: "Europe/Madrid" },
+      start: { dateTime: startISO, timeZone: "Europe/London" },
+      end: { dateTime: endISO, timeZone: "Europe/London" },
     },
   });
 
   return ev.data;
 }
 
-/**
- * Envía invitación sin SMTP:
- * - añade attendee
- * - Google manda email (sendUpdates: "all")
- */
 async function addAttendeeAndSendInvite({ clientId, eventId, attendeeEmail }) {
   const calendar = await getGoogleCalendarClient(clientId);
 
@@ -345,9 +222,7 @@ app.get("/google/oauth/callback", async (req, res) => {
     const { tokens } = await oauth2Client.getToken(code);
 
     if (!tokens.refresh_token) {
-      return res
-        .status(400)
-        .send("No refresh_token received. Try again: /google/oauth/start");
+      return res.status(400).send("No refresh_token received. Try again: /google/oauth/start");
     }
 
     await pool.query(
@@ -417,25 +292,7 @@ function generateSlots1h({ now = new Date(), days = 7, count = 3, busyRanges = [
   return slots;
 }
 
-function formatSlotsES(slots) {
-  const fmt = new Intl.DateTimeFormat("es-ES", {
-    weekday: "short",
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "Europe/Madrid",
-  });
-
-  return slots
-    .map((s, i) => {
-      const d = new Date(s.startISO);
-      return `${i + 1}) ${fmt.format(d).replace(",", "")}`;
-    })
-    .join("\n");
-}
-
-function formatSlotsEN(slots) {
+function formatSlots(slots) {
   const fmt = new Intl.DateTimeFormat("en-GB", {
     weekday: "short",
     day: "2-digit",
@@ -459,26 +316,6 @@ function formatSlotsEN(slots) {
 
 app.get("/health", (req, res) => res.status(200).send("ok"));
 
-app.get("/db-test", async (req, res) => {
-  try {
-    const r = await pool.query("select now()");
-    res.json(r.rows[0]);
-  } catch (e) {
-    console.error(e);
-    res.status(500).send("db error");
-  }
-});
-
-app.get("/ai-test", async (req, res) => {
-  try {
-    const reply = await generateReply("Hi, I want to book a consultation");
-    res.send(reply);
-  } catch (e) {
-    console.error(e);
-    res.status(500).send("AI error");
-  }
-});
-
 /* ========================================================================== */
 /*                         Meta Webhook (WhatsApp) GET                         */
 /* ========================================================================== */
@@ -489,162 +326,64 @@ app.get("/webhook", (req, res) => {
   const challenge = req.query["hub.challenge"];
 
   if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
-    console.log("Webhook verificado");
+    console.log("Webhook verificado ✅");
     return res.status(200).send(challenge);
   }
   return res.sendStatus(403);
 });
 
 /* ========================================================================== */
-/*                      Meta Lead Ads Webhook (GET/POST)                       */
+/*                           CRM Webhook (GoHighLevel)                         */
 /* ========================================================================== */
 
-app.get("/webhook/meta-leads", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode === "subscribe" && token === process.env.META_LEADS_VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
-  }
-  return res.sendStatus(403);
-});
-
-app.post("/webhook/meta-leads", async (req, res) => {
+app.post("/crm/new-lead", async (req, res) => {
   try {
-    const body = req.body;
-    await pool.query(
-      `insert into leads_inbox (client_id, source, raw_payload)
-       values ($1, $2, $3::jsonb)`,
-      ["default", "meta_leads", JSON.stringify(body)]
-    );
-
-    return res.sendStatus(200);
-  } catch (e) {
-    console.error("META LEADS WEBHOOK ERROR ❌", e);
-    return res.sendStatus(200);
-  }
-});
-
-// Extrae leadgen_id del payload típico de Meta Lead Ads
-function extractLeadgenId(raw = {}) {
-  try {
-    const entry = raw?.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const value = changes?.value;
-    return value?.leadgen_id || null;
-  } catch {
-    return null;
-  }
-}
-
-async function processLeadsInbox({ clientId = "default", limit = 20 }) {
-  const { rows } = await pool.query(
-    `
-    select id, client_id, source, raw_payload
-    from leads_inbox
-    where client_id = $1
-      and source = 'meta_leads'
-      and status = 'pending'
-    order by received_at asc
-    limit $2
-    `,
-    [clientId, limit]
-  );
-
-  let processed = 0;
-
-  for (const item of rows) {
-    const lock = await pool.query(
-      `
-      update leads_inbox
-      set status = 'processing'
-      where id = $1 and status = 'pending'
-      returning id
-      `,
-      [item.id]
-    );
-    if (lock.rowCount === 0) continue;
-
-    try {
-      const externalId = extractLeadgenId(item.raw_payload);
-      if (!externalId) {
-        await pool.query(
-          `update leads_inbox set status='error', error=$2, processed_at=now() where id=$1`,
-          [item.id, "No leadgen_id in payload"]
-        );
-        continue;
-      }
-
-      // Dedupe por (client_id, source, external_id)
-      const dedupe = await pool.query(
-        `
-        insert into leads_inbox_dedupe (client_id, source, external_id)
-        values ($1,$2,$3)
-        on conflict do nothing
-        `,
-        [clientId, item.source, externalId]
-      );
-
-      if (dedupe.rowCount === 0) {
-        await pool.query(`update leads_inbox set status='duplicate', processed_at=now() where id=$1`, [
-          item.id,
-        ]);
-        continue;
-      }
-
-      // Upsert lead mínimo
-      const up = await pool.query(
-        `
-        insert into leads (client_id, source, external_id, meta_payload, created_at)
-        values ($1,$2,$3,$4::jsonb, now())
-        on conflict (client_id, source, external_id)
-        do update set meta_payload = excluded.meta_payload
-        returning id
-        `,
-        [clientId, item.source, externalId, JSON.stringify(item.raw_payload)]
-      );
-
-      const leadId = up.rows?.[0]?.id;
-
-      await pool.query(
-        `
-        update leads
-        set stage = coalesce(stage,'new'),
-            score = coalesce(score, 0),
-            urgency = coalesce(urgency,'low')
-        where id = $1
-        `,
-        [leadId]
-      );
-
-      await pool.query(`update leads_inbox set status='processed', processed_at=now() where id=$1`, [
-        item.id,
-      ]);
-
-      processed++;
-    } catch (e) {
-      console.error("PROCESS INBOX ITEM ERROR ❌", e);
-      await pool.query(
-        `update leads_inbox set status='error', error=$2, processed_at=now() where id=$1`,
-        [item.id, String(e?.message || e)]
-      );
+    const token = req.headers["x-crm-token"];
+    if (process.env.CRM_WEBHOOK_TOKEN && token !== process.env.CRM_WEBHOOK_TOKEN) {
+      return res.status(401).json({ ok: false, error: "unauthorized" });
     }
-  }
 
-  return { candidates: rows.length, processed };
-}
+    const body = req.body || {};
+    const contact = body.contact || body;
 
-app.get("/cron/process-leads", async (req, res) => {
-  try {
-    const token = req.query.token;
-    if (!token || token !== process.env.CRON_TOKEN) return res.status(401).send("unauthorized");
+    const phone =
+      contact.phone ||
+      contact.Phone ||
+      contact.mobile ||
+      contact.mobilePhone ||
+      contact?.customFields?.phone ||
+      contact?.customFields?.Phone;
 
-    const result = await processLeadsInbox({ clientId: "default", limit: 20 });
-    return res.json({ ok: true, ...result });
+    const name =
+      contact.firstName ||
+      contact.firstname ||
+      contact.name ||
+      contact.fullName ||
+      contact.contactName ||
+      null;
+
+    const waTo = normalizePhone(phone);
+
+    if (!waTo) return res.status(200).json({ ok: true, skipped: true, reason: "no phone" });
+
+    const link = process.env.FRESHA_BOOKING_LINK;
+    if (!link) return res.status(500).json({ ok: false, error: "Missing FRESHA_BOOKING_LINK" });
+
+    // Dedupe: mismo número, mismo día
+    const dayKey = new Date().toISOString().slice(0, 10);
+    const key = `crm:${waTo}:${dayKey}`;
+    if (isDuplicate(key)) return res.status(200).json({ ok: true, deduped: true });
+
+    const msg =
+      `Hi${name ? ` ${name}` : ""}! Thanks for reaching out to Bell Moon Aesthetics London. ` +
+      `You can book your consultation here: ${link}`;
+
+    await sendWhatsAppText(waTo, msg);
+
+    return res.status(200).json({ ok: true });
   } catch (e) {
-    console.error("CRON PROCESS LEADS ERROR ❌", e);
-    return res.status(500).json({ ok: false });
+    console.error("CRM WEBHOOK ERROR ❌", e);
+    return res.status(200).json({ ok: false });
   }
 });
 
@@ -806,58 +545,6 @@ app.get("/cron/reminders", async (req, res) => {
 });
 
 /* ========================================================================== */
-/*                           CRM Webhook -> WhatsApp                           */
-/* ========================================================================== */
-
-app.post("/crm/new-lead", async (req, res) => {
-  try {
-    // token simple opcional
-    const token = req.headers["x-crm-token"];
-    if (process.env.CRM_WEBHOOK_TOKEN && token !== process.env.CRM_WEBHOOK_TOKEN) {
-      return res.status(401).json({ ok: false, error: "unauthorized" });
-    }
-
-    const body = req.body || {};
-    const contact = body.contact || body;
-
-    const phone =
-      contact.phone ||
-      contact.Phone ||
-      contact.mobile ||
-      contact.mobilePhone ||
-      contact?.customFields?.phone ||
-      contact?.customFields?.Phone;
-
-    const name =
-      contact.firstName ||
-      contact.firstname ||
-      contact.name ||
-      contact.fullName ||
-      contact.contactName ||
-      null;
-
-    const waTo = normalizePhone(phone);
-
-    if (!waTo) return res.status(200).json({ ok: true, skipped: true, reason: "no phone" });
-
-    const link = process.env.FRESHA_BOOKING_LINK;
-    if (!link) return res.status(500).json({ ok: false, error: "Missing FRESHA_BOOKING_LINK" });
-
-    // dedupe key: phone + day (simple)
-    const dayKey = new Date().toISOString().slice(0, 10);
-    const key = `crm:${waTo}:${dayKey}`;
-    if (isDuplicate(key)) return res.status(200).json({ ok: true, deduped: true });
-
-    await sendWelcomeMessage({ waTo, name, link });
-
-    return res.status(200).json({ ok: true });
-  } catch (e) {
-    console.error("CRM WEBHOOK ERROR ❌", e);
-    return res.status(200).json({ ok: false });
-  }
-});
-
-/* ========================================================================== */
 /*                          WhatsApp Webhook (POST)                             */
 /* ========================================================================== */
 
@@ -887,7 +574,6 @@ app.post("/webhook", async (req, res) => {
     const name = change?.contacts?.[0]?.profile?.name || null;
     const waFrom = phone ? `+${phone}` : null;
 
-    // Guardar inbound + lead (tu función SQL)
     const r = await pool.query("select * from upsert_inbound_whatsapp($1,$2,$3,$4)", [
       clientId,
       waFrom,
@@ -897,7 +583,7 @@ app.post("/webhook", async (req, res) => {
     const outLeadId = r.rows?.[0]?.out_lead_id;
     if (!outLeadId) return res.sendStatus(200);
 
-    /* ------------------------ Invitación: esperando email ------------------------ */
+    /* ------------------- Esperando email para invitación ------------------- */
     {
       const { rows: st } = await pool.query(
         "select awaiting_email, last_event from scheduling_state where client_id=$1 and lead_id=$2",
@@ -912,10 +598,7 @@ app.post("/webhook", async (req, res) => {
         const eventId = lastEvent.eventId;
 
         if (!eventId) {
-          await sendWhatsAppText(
-            waFrom,
-            "Thanks — I can’t find the appointment linked. Please type “book” and I’ll share available slots."
-          );
+          await sendWhatsAppText(waFrom, "Thanks — I can't find the appointment linked. Please type \"book\" and I'll share available slots.");
           return res.sendStatus(200);
         }
 
@@ -926,10 +609,7 @@ app.post("/webhook", async (req, res) => {
           await sendWhatsAppText(waFrom, `Perfect ✅ Invitation sent to ${email}.`);
         } catch (e) {
           console.error("CAL INVITE ERROR ❌", e);
-          await sendWhatsAppText(
-            waFrom,
-            "I tried to send the invitation but it failed. Could you confirm the email address?"
-          );
+          await sendWhatsAppText(waFrom, "I tried to send the invitation but it failed. Could you confirm the email address?");
           return res.sendStatus(200);
         }
 
@@ -939,10 +619,8 @@ app.post("/webhook", async (req, res) => {
         );
 
         await pool.query(
-          `
-          insert into events (client_id, lead_id, type, payload)
-          values ($1,$2,'appointment_invite_sent', jsonb_build_object('email',$3::text,'eventId',$4::text))
-          `,
+          `insert into events (client_id, lead_id, type, payload)
+           values ($1,$2,'appointment_invite_sent', jsonb_build_object('email',$3::text,'eventId',$4::text))`,
           [clientId, outLeadId, email, eventId]
         );
 
@@ -950,11 +628,11 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    /* ----------------------------------- AGENDA ---------------------------------- */
+    /* ----------------------------- Agenda ----------------------------- */
     if (wantsAppointment(text)) {
       const choice = parseChoice(text);
 
-      // Si elige 1/2/3 => reservar
+      // Usuario elige slot (1/2/3)
       if (choice) {
         const { rows: stRows } = await pool.query(
           "select proposed from scheduling_state where client_id=$1 and lead_id=$2",
@@ -965,7 +643,7 @@ app.post("/webhook", async (req, res) => {
         const picked = proposed[choice - 1];
 
         if (!picked) {
-          await sendWhatsAppText(waFrom, "I can’t find that slot. Type “book” and I’ll share new options.");
+          await sendWhatsAppText(waFrom, "I can't find that slot. Type \"book\" and I'll share new options.");
           return res.sendStatus(200);
         }
 
@@ -977,34 +655,29 @@ app.post("/webhook", async (req, res) => {
           endISO: picked.endISO,
         });
 
-        // recordatorios (24h y 2h)
+        // Recordatorios 24h y 2h antes
         const startAt = new Date(picked.startISO);
         const remind24h = new Date(startAt.getTime() - 24 * 60 * 60 * 1000);
         const remind2h = new Date(startAt.getTime() - 2 * 60 * 60 * 1000);
 
         await pool.query(
-          `
-          insert into appointment_reminders (client_id, lead_id, event_id, start_at, remind_at, kind)
-          values
-            ($1,$2,$3,$4,$5,'24h'),
-            ($1,$2,$3,$4,$6,'2h')
-          on conflict do nothing
-          `,
+          `insert into appointment_reminders (client_id, lead_id, event_id, start_at, remind_at, kind)
+           values
+             ($1,$2,$3,$4,$5,'24h'),
+             ($1,$2,$3,$4,$6,'2h')
+           on conflict do nothing`,
           [clientId, outLeadId, ev.id, startAt.toISOString(), remind24h.toISOString(), remind2h.toISOString()]
         );
 
-        // estado: pedir email para enviar invitación
         await pool.query(
-          `
-          insert into scheduling_state (client_id, lead_id, awaiting_email, last_event, updated_at)
-          values ($1,$2,true, jsonb_build_object('eventId',$3::text,'startISO',$4::text,'endISO',$5::text), now())
-          on conflict (client_id, lead_id)
-          do update set awaiting_email=true, last_event=excluded.last_event, updated_at=now()
-          `,
+          `insert into scheduling_state (client_id, lead_id, awaiting_email, last_event, updated_at)
+           values ($1,$2,true, jsonb_build_object('eventId',$3::text,'startISO',$4::text,'endISO',$5::text), now())
+           on conflict (client_id, lead_id)
+           do update set awaiting_email=true, last_event=excluded.last_event, updated_at=now()`,
           [clientId, outLeadId, ev.id, picked.startISO, picked.endISO]
         );
 
-        // si ya hay email guardado => invitar sin preguntar
+        // Si ya hay email guardado, enviar invitación directamente
         const { rows: leadRows } = await pool.query("select email from leads where id=$1", [outLeadId]);
         const savedEmail = leadRows?.[0]?.email || null;
 
@@ -1019,9 +692,7 @@ app.post("/webhook", async (req, res) => {
 
             await sendWhatsAppText(
               waFrom,
-              `Booked ✅\nStart: ${new Date(picked.startISO).toLocaleString("en-GB", {
-                timeZone: "Europe/London",
-              })}\nDuration: 1 hour\n\nInvitation sent to ${savedEmail}.`
+              `Booked ✅\nStart: ${new Date(picked.startISO).toLocaleString("en-GB", { timeZone: "Europe/London" })}\nDuration: 1 hour\n\nInvitation sent to ${savedEmail}.`
             );
             return res.sendStatus(200);
           } catch (e) {
@@ -1031,14 +702,12 @@ app.post("/webhook", async (req, res) => {
 
         await sendWhatsAppText(
           waFrom,
-          `Booked ✅\nStart: ${new Date(picked.startISO).toLocaleString("en-GB", {
-            timeZone: "Europe/London",
-          })}\nDuration: 1 hour\n\nWhat email should I send the calendar invitation to?`
+          `Booked ✅\nStart: ${new Date(picked.startISO).toLocaleString("en-GB", { timeZone: "Europe/London" })}\nDuration: 1 hour\n\nWhat email should I send the calendar invitation to?`
         );
         return res.sendStatus(200);
       }
 
-      // Proponer huecos
+      // Proponer huecos disponibles
       const now = new Date();
       const timeMinISO = now.toISOString();
       const timeMax = new Date(now);
@@ -1049,7 +718,7 @@ app.post("/webhook", async (req, res) => {
       const slots = generateSlots1h({ now, days: 7, count: 3, busyRanges: busy });
 
       if (!slots.length) {
-        await sendWhatsAppText(waFrom, "I can’t see availability this week. Would next week work for you?");
+        await sendWhatsAppText(waFrom, "I can't see availability this week. Would next week work for you?");
         return res.sendStatus(200);
       }
 
@@ -1063,20 +732,20 @@ app.post("/webhook", async (req, res) => {
 
       const msgText =
         "Here are the next available 1-hour slots:\n" +
-        formatSlotsEN(slots) +
+        formatSlots(slots) +
         "\n\nReply with 1, 2, or 3 to book.";
 
       await sendWhatsAppText(waFrom, msgText);
       return res.sendStatus(200);
     }
 
-    /* ---------------------------------- IA normal ------------------------------- */
+    /* ----------------------------- IA normal ----------------------------- */
     let aiReply;
     try {
       aiReply = await generateReply(text);
     } catch (err) {
       console.error("AI ERROR ❌", err);
-      aiReply = "Sorry — I can’t reply right now. Please try again in a few minutes.";
+      aiReply = "Sorry — I can't reply right now. Please try again in a few minutes.";
     }
 
     await pool.query(
