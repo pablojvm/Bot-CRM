@@ -1,3 +1,29 @@
+/**
+ * server.js (Bell Moon Aesthetics)
+ *
+ * ✅ WhatsApp: texto libre (sin template)
+ * ✅ Google Calendar: agenda citas + invitación por email vía Google
+ * ✅ CRM webhook (GoHighLevel): /crm/new-lead → envía WhatsApp con link de Fresha
+ * ✅ WhatsApp inbound: agenda (propone huecos, reserva, pide email, envía invite)
+ * ✅ Crons: /cron/followups y /cron/reminders
+ *
+ * -------------------
+ * ENV REQUERIDAS
+ * -------------------
+ * OPENAI_API_KEY
+ * PHONE_NUMBER_ID
+ * WHATSAPP_TOKEN
+ * VERIFY_TOKEN
+ * CRON_TOKEN
+ * GOOGLE_CLIENT_ID
+ * GOOGLE_CLIENT_SECRET
+ * GOOGLE_REDIRECT_URL
+ * FRESHA_BOOKING_LINK
+ *
+ * (Opcional)
+ * CRM_WEBHOOK_TOKEN
+ */
+
 require("dotenv").config();
 
 const dns = require("dns");
@@ -47,37 +73,41 @@ const CLOUD = "dvqe1t4uh"; // kept for reference
 
 const TREATMENT_PHOTOS = {
   lips: [
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515143/%D7%A9%D7%A4%D7%AA%D7%99%D7%99%D7%9D_%D7%97%D7%93%D7%A9_bkgs6r.jpg",
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515135/Lips_2_reyaf5.jpg",
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515127/Lips_1_fhan5n.jpg",
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515126/Lips_urybbk.jpg",
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515135/Lips_2_reyaf5.jpg", caption: "✨ Before & After — Bell Moon Aesthetics London" },
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515127/Lips_1_fhan5n.jpg", caption: "✨ Before & After — Bell Moon Aesthetics London" },
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515143/%D7%A9%D7%A4%D7%AA%D7%99%D7%99%D7%9D_%D7%97%D7%93%D7%A9_bkgs6r.jpg", caption: "✨ Results — Bell Moon Aesthetics London" },
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515126/Lips_urybbk.jpg", caption: "✨ Results — Bell Moon Aesthetics London" },
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515140/%D7%9E%D7%99%D7%9C%D7%95%D7%99_%D7%A9%D7%A4%D7%AA%D7%99%D7%99%D7%9D_%D7%90%D7%97%D7%A8%D7%99_jyxccc.heic", caption: "✨ Results — Bell Moon Aesthetics London" },
   ],
   nose: [
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515125/%D7%9E%D7%99%D7%9C%D7%95%D7%99_%D7%90%D7%A3_nose_zmq12q.jpg",
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515125/Nose_wjbkr8.jpg",
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515125/%D7%9E%D7%99%D7%9C%D7%95%D7%99_%D7%90%D7%A3_nose_zmq12q.jpg", caption: "✨ Before & After — Bell Moon Aesthetics London" },
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515125/Nose_wjbkr8.jpg", caption: "✨ Before & After — Bell Moon Aesthetics London" },
+    { url: "https://res.cloudinary.com/dvqe1t4uh/video/upload/v1774515124/Nose_fillers_go0n28.mov", caption: "✨ Results — Bell Moon Aesthetics London" },
   ],
   double_chin: [
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515119/IMG_1057_ea0m4i.jpg",
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515119/IMG_6326_ngm3nm.jpg",
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515120/Double_chin_1_vvnvy9.jpg",
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515119/IMG_1057_ea0m4i.jpg", caption: "✨ Before & After — Bell Moon Aesthetics London" },
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515119/IMG_6326_ngm3nm.jpg", caption: "✨ Before & After — Bell Moon Aesthetics London" },
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515120/Double_chin_1_vvnvy9.jpg", caption: "✨ Before & After — Bell Moon Aesthetics London" },
   ],
   dark_circles: [
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515124/Eyes_cl3xrd.jpg",
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515118/IMG_1876_f9nmdf.jpg",
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515124/Eyes_cl3xrd.jpg", caption: "✨ Before & After — Bell Moon Aesthetics London" },
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515118/IMG_1876_f9nmdf.jpg", caption: "✨ Before & After — Bell Moon Aesthetics London" },
   ],
   pigmentation: [
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515123/Pigmentation_2_ftn2dy.jpg",
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515123/Pigmentation_2_ftn2dy.jpg", caption: "✨ Before & After — Bell Moon Aesthetics London" },
+    { url: "https://res.cloudinary.com/dvqe1t4uh/video/upload/v1774515115/Pigmentation_sbb4du.mov", caption: "✨ Results — Bell Moon Aesthetics London" },
   ],
   microneedling: [
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515123/Pigmentation_2_ftn2dy.jpg",
+    { url: "https://res.cloudinary.com/dvqe1t4uh/video/upload/v1774515231/Micronidling_z1let5.mov", caption: "✨ Results — Bell Moon Aesthetics London" },
   ],
   veins: [
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515121/Veins_removal_ultpub.jpg",
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515144/%D7%95%D7%A8%D7%99%D7%93%D7%99%D7%9D_%D7%A0%D7%99%D7%9E%D7%99%D7%9D_%D7%97%D7%93%D7%A9_zfkiii.jpg",
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515121/Veins_removal_ultpub.jpg", caption: "✨ Before & After — Bell Moon Aesthetics London" },
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515144/%D7%95%D7%A8%D7%99%D7%93%D7%99%D7%9D_%D7%A0%D7%99%D7%9E%D7%99%D7%9D_%D7%97%D7%93%D7%A9_zfkiii.jpg", caption: "✨ Before & After — Bell Moon Aesthetics London" },
   ],
   abdomen: [
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515242/%D7%91%D7%98%D7%9F_aczvph.jpg",
-    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515243/%D7%91%D7%98%D7%9F__tkbtu3.jpg",
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515242/%D7%91%D7%98%D7%9F_aczvph.jpg", caption: "✨ Before & After — Bell Moon Aesthetics London" },
+    { url: "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515243/%D7%91%D7%98%D7%9F__tkbtu3.jpg", caption: "✨ Before & After — Bell Moon Aesthetics London" },
+    { url: "https://res.cloudinary.com/dvqe1t4uh/video/upload/v1774515244/%D7%91%D7%98%D7%9F_%D7%AA%D7%94%D7%9C%D7%99%D7%9A_%D7%98%D7%99%D7%A4%D7%95%D7%9C_ghqhef.mov", caption: "✨ Results — Bell Moon Aesthetics London" },
   ],
 };
 
@@ -94,25 +124,25 @@ function detectTreatmentFromText(text = "") {
   return null;
 }
 
-async function sendWhatsAppImage(to, imageUrl, caption = "") {
-  if (!to || !imageUrl) return null;
+async function sendWhatsAppMedia(to, mediaUrl, caption = "") {
+  if (!to || !mediaUrl) return null;
+  const isVideo = /\.(mov|mp4|avi)$/i.test(mediaUrl);
   const url = `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`;
+  const body = isVideo
+    ? { messaging_product: "whatsapp", to: to.replace("+", ""), type: "video", video: { link: mediaUrl, caption } }
+    : { messaging_product: "whatsapp", to: to.replace("+", ""), type: "image", image: { link: mediaUrl, caption } };
+
   const response = await fetch(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to: to.replace("+", ""),
-      type: "image",
-      image: { link: imageUrl, caption },
-    }),
+    body: JSON.stringify(body),
   });
   const data = await response.json();
-  if (!response.ok) console.error("WHATSAPP IMAGE ERROR ❌", data);
-  else console.log("WHATSAPP IMAGE SENT ✅");
+  if (!response.ok) console.error("WHATSAPP MEDIA ERROR ❌", data);
+  else console.log("WHATSAPP MEDIA SENT ✅", isVideo ? "video" : "image");
   return data;
 }
 
@@ -925,12 +955,12 @@ app.post("/webhook", async (req, res) => {
 
     await sendWhatsAppText(waFrom, aiReply);
 
-    // Enviar foto antes/después si el mensaje menciona un tratamiento
+    // Enviar foto/video si el mensaje menciona un tratamiento
     const treatment = detectTreatmentFromText(text);
     if (treatment && TREATMENT_PHOTOS[treatment]?.length) {
       const photos = TREATMENT_PHOTOS[treatment];
-      const photo = photos[Math.floor(Math.random() * photos.length)];
-      await sendWhatsAppImage(waFrom, photo, "✨ Before & After — Bell Moon Aesthetics");
+      const picked = photos[Math.floor(Math.random() * photos.length)];
+      await sendWhatsAppMedia(waFrom, picked.url, picked.caption);
     }
 
     return res.sendStatus(200);
