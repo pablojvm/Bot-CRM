@@ -1,29 +1,3 @@
-/**
- * server.js (Bell Moon Aesthetics)
- *
- * ✅ WhatsApp: texto libre (sin template)
- * ✅ Google Calendar: agenda citas + invitación por email vía Google
- * ✅ CRM webhook (GoHighLevel): /crm/new-lead → envía WhatsApp con link de Fresha
- * ✅ WhatsApp inbound: agenda (propone huecos, reserva, pide email, envía invite)
- * ✅ Crons: /cron/followups y /cron/reminders
- *
- * -------------------
- * ENV REQUERIDAS
- * -------------------
- * OPENAI_API_KEY
- * PHONE_NUMBER_ID
- * WHATSAPP_TOKEN
- * VERIFY_TOKEN
- * CRON_TOKEN
- * GOOGLE_CLIENT_ID
- * GOOGLE_CLIENT_SECRET
- * GOOGLE_REDIRECT_URL
- * FRESHA_BOOKING_LINK
- *
- * (Opcional)
- * CRM_WEBHOOK_TOKEN
- */
-
 require("dotenv").config();
 
 const dns = require("dns");
@@ -63,6 +37,57 @@ function isDuplicate(key) {
   if (RECENT.has(key)) return true;
   RECENT.set(key, now);
   return false;
+}
+
+/* ========================================================================== */
+/*                         Before/After Photos (Cloudinary)                   */
+/* ========================================================================== */
+
+const CLOUD = "dvqe1t4uh";
+const CDN = `https://res.cloudinary.com/${CLOUD}/image/upload`;
+
+const TREATMENT_PHOTOS = {
+  lips:        [`${CDN}/Lips_fillers.jpg`, `${CDN}/Lips__1_.JPG`, `${CDN}/Lips_1_.jpg`],
+  nose:        [`${CDN}/Nose_fillers.jpg`, `${CDN}/Nose_filler_.JPG`],
+  double_chin: [`${CDN}/Double_chin.jpg`, `${CDN}/Double_chin_1_.jpg`, `${CDN}/Double_chin_2_.jpg`],
+  dark_circles:[`${CDN}/Eyes.jpg`],
+  pigmentation:[`${CDN}/Pigmentation.jpg`, `${CDN}/Pigmentation_1_.jpg`],
+  veins:       [`${CDN}/Veins_removed.jpg`, `${CDN}/Veins_removal.jpg`],
+  sculptra:    [`${CDN}/IMG_1876.JPG`, `${CDN}/IMG_1057.JPG`],
+};
+
+function detectTreatmentFromText(text = "") {
+  const t = text.toLowerCase();
+  if (/(lip|labio|boca|filler)/.test(t)) return "lips";
+  if (/(nose|nariz|rhinoplast|nose filler)/.test(t)) return "nose";
+  if (/(chin|papada|jawline|double chin)/.test(t)) return "double_chin";
+  if (/(dark circle|ojera|under.?eye|eye bag)/.test(t)) return "dark_circles";
+  if (/(pigment|manchas|melasma|dark spot|spot)/.test(t)) return "pigmentation";
+  if (/(vein|vena|capillar|thread vein|spider)/.test(t)) return "veins";
+  if (/(sculptra|collagen|volume|jawline|facial)/.test(t)) return "sculptra";
+  return null;
+}
+
+async function sendWhatsAppImage(to, imageUrl, caption = "") {
+  if (!to || !imageUrl) return null;
+  const url = `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to: to.replace("+", ""),
+      type: "image",
+      image: { link: imageUrl, caption },
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) console.error("WHATSAPP IMAGE ERROR ❌", data);
+  else console.log("WHATSAPP IMAGE SENT ✅");
+  return data;
 }
 
 function wantsAppointment(text = "") {
@@ -128,6 +153,36 @@ Face:
 Body:
 - Body Contour Signature — non-surgical body sculpting and contouring.
 - Double Chin Fat Dissolving — defines the jawline without surgery.
+
+════════════════════════════════
+MICRONEEDLING — DETAILED KNOWLEDGE
+════════════════════════════════
+Also known as Collagen Induction Therapy. Medical-grade devices create micro-channels in the skin, activating the body's natural healing response and increasing collagen production by up to 300% over time.
+
+What it treats: fine lines & wrinkles, acne scars, pigmentation, enlarged pores, dull/tired skin, loss of firmness, uneven texture.
+
+Treatment experience:
+- Duration: 45–60 minutes
+- Comfort: mild tingling, numbing cream available
+- Downtime: light redness for 24–48 hours only
+- Results: visible glow within days, collagen continues improving for up to 3 months per session
+
+Recommended course: 6–8 sessions, every 3–4 weeks.
+
+Aftercare (share if asked):
+- Avoid direct sun for 48h, apply SPF daily, keep skin hydrated, avoid makeup for 24h.
+
+Who should AVOID it: active acne, skin infections, eczema, rosacea, or pregnancy.
+
+FAQs you can answer confidently:
+- "Is it safe?" → Yes, performed by trained professionals with medical-grade devices.
+- "Does it hurt?" → Minimal discomfort. Numbing cream applied beforehand.
+- "How many sessions?" → 6–8 sessions every 3–4 weeks for best results.
+- "When will I see results?" → Glow within days, collagen keeps improving over weeks.
+- "Is there downtime?" → Mild redness for 24–48 hours only.
+- "Can it be combined?" → Yes, with RF, mesotherapy, and advanced serums.
+- "Is it for all skin types?" → Yes, personalised after consultation.
+- "How long do results last?" → Several months with proper skincare and maintenance.
 
 ════════════════════════════════
 KEY PHRASES TO USE NATURALLY
@@ -843,6 +898,15 @@ app.post("/webhook", async (req, res) => {
     );
 
     await sendWhatsAppText(waFrom, aiReply);
+
+    // Enviar foto antes/después si el mensaje menciona un tratamiento
+    const treatment = detectTreatmentFromText(text);
+    if (treatment && TREATMENT_PHOTOS[treatment]?.length) {
+      const photos = TREATMENT_PHOTOS[treatment];
+      const photo = photos[Math.floor(Math.random() * photos.length)];
+      await sendWhatsAppImage(waFrom, photo, "✨ Before & After — Bell Moon Aesthetics");
+    }
+
     return res.sendStatus(200);
   } catch (e) {
     console.error("WEBHOOK ERROR ❌", e);
