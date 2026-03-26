@@ -43,17 +43,42 @@ function isDuplicate(key) {
 /*                         Before/After Photos (Cloudinary)                   */
 /* ========================================================================== */
 
-const CLOUD = "dvqe1t4uh";
-const CDN = `https://res.cloudinary.com/${CLOUD}/image/upload`;
+const CLOUD = "dvqe1t4uh"; // kept for reference
 
 const TREATMENT_PHOTOS = {
-  lips:        [`${CDN}/Lips_fillers.jpg`, `${CDN}/Lips__1_.JPG`, `${CDN}/Lips_1_.jpg`],
-  nose:        [`${CDN}/Nose_fillers.jpg`, `${CDN}/Nose_filler_.JPG`],
-  double_chin: [`${CDN}/Double_chin.jpg`, `${CDN}/Double_chin_1_.jpg`, `${CDN}/Double_chin_2_.jpg`],
-  dark_circles:[`${CDN}/Eyes.jpg`],
-  pigmentation:[`${CDN}/Pigmentation.jpg`, `${CDN}/Pigmentation_1_.jpg`],
-  veins:       [`${CDN}/Veins_removed.jpg`, `${CDN}/Veins_removal.jpg`],
-  sculptra:    [`${CDN}/IMG_1876.JPG`, `${CDN}/IMG_1057.JPG`],
+  lips: [
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515143/%D7%A9%D7%A4%D7%AA%D7%99%D7%99%D7%9D_%D7%97%D7%93%D7%A9_bkgs6r.jpg",
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515135/Lips_2_reyaf5.jpg",
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515127/Lips_1_fhan5n.jpg",
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515126/Lips_urybbk.jpg",
+  ],
+  nose: [
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515125/%D7%9E%D7%99%D7%9C%D7%95%D7%99_%D7%90%D7%A3_nose_zmq12q.jpg",
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515125/Nose_wjbkr8.jpg",
+  ],
+  double_chin: [
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515119/IMG_1057_ea0m4i.jpg",
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515119/IMG_6326_ngm3nm.jpg",
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515120/Double_chin_1_vvnvy9.jpg",
+  ],
+  dark_circles: [
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515124/Eyes_cl3xrd.jpg",
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515118/IMG_1876_f9nmdf.jpg",
+  ],
+  pigmentation: [
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515123/Pigmentation_2_ftn2dy.jpg",
+  ],
+  microneedling: [
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515123/Pigmentation_2_ftn2dy.jpg",
+  ],
+  veins: [
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515121/Veins_removal_ultpub.jpg",
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515144/%D7%95%D7%A8%D7%99%D7%93%D7%99%D7%9D_%D7%A0%D7%99%D7%9E%D7%99%D7%9D_%D7%97%D7%93%D7%A9_zfkiii.jpg",
+  ],
+  abdomen: [
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515242/%D7%91%D7%98%D7%9F_aczvph.jpg",
+    "https://res.cloudinary.com/dvqe1t4uh/image/upload/v1774515243/%D7%91%D7%98%D7%9F__tkbtu3.jpg",
+  ],
 };
 
 function detectTreatmentFromText(text = "") {
@@ -62,9 +87,10 @@ function detectTreatmentFromText(text = "") {
   if (/(nose|nariz|rhinoplast|nose filler)/.test(t)) return "nose";
   if (/(chin|papada|jawline|double chin)/.test(t)) return "double_chin";
   if (/(dark circle|ojera|under.?eye|eye bag)/.test(t)) return "dark_circles";
+  if (/(microneedl|microaguja|collagen induction)/.test(t)) return "microneedling";
   if (/(pigment|manchas|melasma|dark spot|spot)/.test(t)) return "pigmentation";
   if (/(vein|vena|capillar|thread vein|spider)/.test(t)) return "veins";
-  if (/(sculptra|collagen|volume|jawline|facial)/.test(t)) return "sculptra";
+  if (/(abdomen|belly|stomach|barriga|tripa|body contour|contorno)/.test(t)) return "abdomen";
   return null;
 }
 
