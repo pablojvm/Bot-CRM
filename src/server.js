@@ -543,16 +543,17 @@ app.post("/crm/new-lead", async (req, res) => {
     }
 
     const body = req.body || {};
-    const contact = body.contact || body;
-    console.log("CRM BODY ➡️", JSON.stringify(body));
 
     const phone =
-      contact.phone ||
-      contact.Phone ||
-      contact.mobile ||
-      contact.mobilePhone ||
-      contact?.customFields?.phone ||
-      contact?.customFields?.Phone;
+      body.phone ||
+      body.Phone ||
+      body.mobile ||
+      body.mobilePhone ||
+      body.contact?.phone ||
+      body.contact?.Phone ||
+      body.customData?.phone;
+
+    const contact = body;
 
     const name =
       contact.firstName ||
