@@ -544,6 +544,7 @@ app.post("/crm/new-lead", async (req, res) => {
 
     const body = req.body || {};
     const contact = body.contact || body;
+    console.log("CRM BODY ➡️", JSON.stringify(body));
 
     const phone =
       contact.phone ||
