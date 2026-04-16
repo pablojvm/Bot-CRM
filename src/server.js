@@ -29,13 +29,47 @@ require("dotenv").config();
 const dns = require("dns");
 if (dns.setDefaultResultOrder) dns.setDefaultResultOrder("ipv4first");
 
+const crypto = require("crypto");
 const express = require("express");
 const OpenAI = require("openai");
 const { google } = require("googleapis");
 const pool = require("../db");
 
 const app = express();
-app.use(express.json({ type: "*/*" }));
+
+/* ========================================================================== */
+/*                       Webhook Signature Verification                       */
+/* ========================================================================== */
+
+/**
+ * Verifica la firma X-Hub-Signature-256 de Meta en cada POST al webhook.
+ * Si APP_SECRET no está configurado, se loguea un warning pero se deja pasar
+ * (para desarrollo). En producción APP_SECRET DEBE estar configurado.
+ */
+function verifySignature(req, res, buf) {
+  if (!process.env.APP_SECRET) {
+    console.warn("⚠️  APP_SECRET not set — skipping webhook signature verification (unsafe for production)");
+    return;
+  }
+
+  const signature = req.headers["x-hub-signature-256"];
+  if (!signature) {
+    throw new Error("Missing X-Hub-Signature-256 header");
+  }
+
+  const expected =
+    "sha256=" +
+    crypto
+      .createHmac("sha256", process.env.APP_SECRET)
+      .update(buf)
+      .digest("hex");
+
+  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+    throw new Error("Invalid webhook signature");
+  }
+}
+
+app.use(express.json({ verify: verifySignature }));
 
 /* ========================================================================== */
 /*                                   Utils                                    */
@@ -68,8 +102,6 @@ function isDuplicate(key) {
 /* ========================================================================== */
 /*                         Before/After Photos (Cloudinary)                   */
 /* ========================================================================== */
-
-const CLOUD = "dvqe1t4uh"; // kept for reference
 
 const TREATMENT_PHOTOS = {
   lips: [
@@ -127,7 +159,7 @@ function detectTreatmentFromText(text = "") {
 async function sendWhatsAppMedia(to, mediaUrl, caption = "") {
   if (!to || !mediaUrl) return null;
   const isVideo = /\.(mov|mp4|avi)$/i.test(mediaUrl);
-  const url = `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`;
+  const url = `https://graph.facebook.com/v21.0/${process.env.PHONE_NUMBER_ID}/messages`;
   const body = isVideo
     ? { messaging_product: "whatsapp", to: to.replace("+", ""), type: "video", video: { link: mediaUrl, caption } }
     : { messaging_product: "whatsapp", to: to.replace("+", ""), type: "image", image: { link: mediaUrl, caption } };
@@ -162,7 +194,44 @@ function parseChoice(text = "") {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-async function generateReply(userMessage) {
+/**
+ * Carga las últimas interacciones del lead para dar contexto a OpenAI.
+ * Devuelve un array de { role, content } listo para el chat.
+ */
+async function loadConversationHistory(clientId, leadId, limit = 10) {
+  const { rows } = await pool.query(
+    `
+    select type, payload, created_at
+    from events
+    where client_id = $1 and lead_id = $2
+      and type in ('inbound_msg', 'outbound_msg')
+    order by created_at desc
+    limit $3
+    `,
+    [clientId, leadId, limit]
+  );
+
+  // rows vienen DESC, los invertimos para orden cronológico
+  return rows.reverse().map((r) => ({
+    role: r.type === "inbound_msg" ? "user" : "assistant",
+    content: r.payload?.text || "",
+  }));
+}
+
+async function generateReply(userMessage, { clientId = "default", leadId = null } = {}) {
+  // Cargar historial si tenemos leadId
+  let history = [];
+  if (leadId) {
+    try {
+      history = await loadConversationHistory(clientId, leadId);
+    } catch (e) {
+      console.error("HISTORY LOAD ERROR ⚠️", e.message);
+    }
+  }
+
+  // Añadir el mensaje actual al final
+  history.push({ role: "user", content: userMessage });
+
   const response = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: [
@@ -280,7 +349,7 @@ WHAT NOT TO DO
 - Do not mention competitor clinics.
 `.trim(),
       },
-      { role: "user", content: userMessage },
+      ...history,
     ],
   });
 
@@ -294,7 +363,7 @@ WHAT NOT TO DO
 async function sendWhatsAppText(to, message) {
   if (!to) return null;
 
-  const url = `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`;
+  const url = `https://graph.facebook.com/v21.0/${process.env.PHONE_NUMBER_ID}/messages`;
 
   const response = await fetch(url, {
     method: "POST",
@@ -943,7 +1012,7 @@ app.post("/webhook", async (req, res) => {
     /* ----------------------------- IA normal ----------------------------- */
     let aiReply;
     try {
-      aiReply = await generateReply(text);
+      aiReply = await generateReply(text, { clientId, leadId: outLeadId });
     } catch (err) {
       console.error("AI ERROR ❌", err);
       aiReply = "Sorry — I can't reply right now. Please try again in a few minutes.";
@@ -970,6 +1039,44 @@ app.post("/webhook", async (req, res) => {
     console.error("WEBHOOK ERROR ❌", e);
     return res.sendStatus(200);
   }
+});
+
+/* ========================================================================== */
+/*                              Privacy Policy                                */
+/* ========================================================================== */
+
+app.get("/privacy", (_req, res) => {
+  res.send(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Privacy Policy – Herion</title>
+<style>body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;line-height:1.6;color:#222}h1{font-size:1.6rem}h2{font-size:1.2rem;margin-top:2rem}</style></head><body>
+<h1>Privacy Policy</h1>
+<p><strong>Last updated:</strong> April 2026</p>
+
+<h2>1. Introduction</h2>
+<p>Herion ("we", "us") operates the Bot-CRM application that provides automated appointment scheduling and customer communication via WhatsApp for our clients' businesses. This policy explains how we collect, use, and protect personal data.</p>
+
+<h2>2. Data We Collect</h2>
+<p>We collect only the data necessary to provide our service: phone numbers, names, and messages exchanged via WhatsApp, as well as email addresses provided for calendar invitations.</p>
+
+<h2>3. How We Use Your Data</h2>
+<p>Data is used exclusively to: respond to customer inquiries, schedule appointments, send appointment reminders, and manage customer relationships on behalf of the business you contacted.</p>
+
+<h2>4. Data Storage & Security</h2>
+<p>Data is stored in encrypted databases hosted on Railway (EU/US). We use industry-standard security measures including HTTPS encryption and access controls.</p>
+
+<h2>5. Data Sharing</h2>
+<p>We do not sell personal data. Data may be shared with: Meta (WhatsApp Business API), OpenAI (message processing), and Google (calendar invitations) solely to provide the service.</p>
+
+<h2>6. Data Retention</h2>
+<p>We retain conversation data for up to 12 months. You may request deletion of your data at any time.</p>
+
+<h2>7. Your Rights</h2>
+<p>You have the right to access, correct, or delete your personal data. To exercise these rights, contact us at: <a href="mailto:pablovillar@herion.es">pablovillar@herion.es</a></p>
+
+<h2>8. Contact</h2>
+<p>Herion – pablovillar@herion.es</p>
+</body></html>`);
 });
 
 /* ========================================================================== */
