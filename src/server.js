@@ -584,6 +584,21 @@ function formatSlots(slots) {
 
 app.get("/health", (req, res) => res.status(200).send("ok"));
 
+app.get("/", (_req, res) => {
+  res.send(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bot-CRM by Herion</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f5f5f5;color:#222}
+.card{background:#fff;border-radius:12px;padding:3rem;text-align:center;box-shadow:0 2px 12px rgba(0,0,0,.08);max-width:480px}
+h1{margin:0 0 .5rem;font-size:1.5rem}p{color:#666;margin:.5rem 0}a{color:#1877f2}</style></head><body>
+<div class="card">
+<h1>Bot-CRM</h1>
+<p>WhatsApp Business automation service by <strong>Herion</strong>.</p>
+<p>This server handles WhatsApp webhook events, appointment scheduling, and customer communication.</p>
+<p><a href="/privacy">Privacy Policy</a></p>
+</div></body></html>`);
+});
+
 /* ========================================================================== */
 /*                         Meta Webhook (WhatsApp) GET                         */
 /* ========================================================================== */
